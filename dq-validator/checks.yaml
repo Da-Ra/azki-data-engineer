@@ -1,0 +1,148 @@
+# Data-quality checks for the azki pipeline.
+# Schema for each check:
+#   name:              unique identifier
+#   type:              one of: sql_equality | sql_threshold | sql_nonzero |
+#                              schema_sha | kafka_lag | kafka_message_shape
+#   severity:          info | warning | critical
+#   interval_seconds:  how often this check runs
+#   (type-specific fields below)
+
+checks:
+
+  # ===== Reconciliation: cross-layer premium sums must agree =====
+
+  - name: premium_reconciliation_mysql_ch_financial
+    type: sql_equality
+    severity: critical
+    interval_seconds: 120
+    sources:
+      mysql:      "SELECT sum(premium_amount) FROM financial_order"
+      clickhouse: "SELECT sum(premium_amount) FROM azki.financial_order_mirror FINAL"
+
+  - name: premium_reconciliation_raw_vs_denorm
+    type: sql_equality
+    severity: critical
+    interval_seconds: 120
+    source: clickhouse
+    query_a: "SELECT sumIf(premium_amount, event_type='purchase') FROM azki.raw_user_events FINAL"
+    query_b: "SELECT sum(premium_amount) FROM azki.purchase_enriched_denorm FINAL"
+
+  - name: purchase_count_raw_vs_denorm
+    type: sql_equality
+    severity: warning
+    interval_seconds: 120
+    source: clickhouse
+    query_a: "SELECT countIf(event_type='purchase') FROM azki.raw_user_events FINAL"
+    query_b: "SELECT count(*) FROM azki.purchase_enriched_denorm FINAL"
+
+  - name: mysql_vs_ch_financial_count
+    type: sql_equality
+    severity: warning
+    interval_seconds: 120
+    sources:
+      mysql:      "SELECT count(*) FROM financial_order"
+      clickhouse: "SELECT count(*) FROM azki.financial_order_mirror FINAL"
+
+  # ===== Sync & delay: freshness gauges per stage =====
+
+  - name: raw_user_events_freshness_seconds
+    type: sql_threshold
+    severity: warning
+    interval_seconds: 30
+    source: clickhouse
+    query: "SELECT toUInt32(now() - max(ingested_at)) FROM azki.raw_user_events"
+    max: 300
+
+  - name: financial_order_mirror_freshness_seconds
+    type: sql_threshold
+    severity: warning
+    interval_seconds: 30
+    source: clickhouse
+    query: "SELECT toUInt32(now() - max(_ingested_at)) FROM azki.financial_order_mirror"
+    max: 300
+
+  - name: purchase_enriched_denorm_freshness_seconds
+    type: sql_threshold
+    severity: warning
+    interval_seconds: 60
+    source: clickhouse
+    query: "SELECT toUInt32(now() - max(_ingested_at)) FROM azki.purchase_enriched_denorm"
+    max: 300
+
+  - name: kafka_user_events_topic_size
+    type: kafka_lag
+    severity: info
+    interval_seconds: 60
+    topic: user_events
+    # No consumer_group → reports topic total offset count (proxy for ingestion volume)
+
+  # ===== Schema drift: SHA of DDL must match expected =====
+
+  - name: mysql_users_schema_sha
+    type: schema_sha
+    severity: critical
+    interval_seconds: 300
+    source: mysql
+    query: "SHOW CREATE TABLE users"
+    expected_sha256: "9bbff06a99ff0f4ecde35802c80a75f0c90f55ed38ac47e1c9588f08d32aaf03"
+
+  - name: mysql_financial_order_schema_sha
+    type: schema_sha
+    severity: critical
+    interval_seconds: 300
+    source: mysql
+    query: "SHOW CREATE TABLE financial_order"
+    expected_sha256: "b43f4a2fb43db11ee6b383f497eb0ea9b9c7b254666b3f4394fd6f72b6aefc54"
+
+  - name: ch_raw_user_events_schema_sha
+    type: schema_sha
+    severity: critical
+    interval_seconds: 300
+    source: clickhouse
+    query: "SHOW CREATE TABLE azki.raw_user_events"
+    expected_sha256: "a2056a9a9d14320d16fa8ac77fe1291b6b90a885393705410d17f58ba7432391"
+
+  - name: ch_purchase_enriched_denorm_schema_sha
+    type: schema_sha
+    severity: critical
+    interval_seconds: 300
+    source: clickhouse
+    query: "SHOW CREATE TABLE azki.purchase_enriched_denorm"
+    expected_sha256: "051c3e2415ac0a07d8fceadad0acaf896ab04146496bd0051b1f42f51e977352"
+
+  # ===== Load thresholds: row counts in sensible ranges =====
+
+  - name: raw_user_events_count_reasonable
+    type: sql_threshold
+    severity: info
+    interval_seconds: 300
+    source: clickhouse
+    query: "SELECT count(*) FROM azki.raw_user_events FINAL"
+    min: 15000
+    max: 30000
+
+  - name: denorm_count_reasonable
+    type: sql_threshold
+    severity: info
+    interval_seconds: 300
+    source: clickhouse
+    query: "SELECT count(*) FROM azki.purchase_enriched_denorm FINAL"
+    min: 4000
+    max: 6000
+
+  # ===== Schema drift: Kafka message format =====
+
+  - name: kafka_user_events_payload_shape
+    type: kafka_message_shape
+    severity: warning
+    interval_seconds: 300
+    topic: user_events
+    sample_size: 20
+    required_fields:
+      - event_time
+      - user_id
+      - session_id
+      - event_type
+      - channel
+      - premium_amount
+    forbidden_extra_fields: true

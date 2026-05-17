@@ -1,0 +1,4 @@
+PyYAML==6.0.1
+PyMySQL==1.1.0
+clickhouse-driver==0.2.7
+confluent-kafka==2.3.0

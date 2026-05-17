@@ -1,0 +1,286 @@
+name: azki-data-engineering
+
+services:
+  kafka:
+    image: confluentinc/cp-kafka:7.6.0
+    container_name: azki-kafka
+    hostname: kafka
+    ports:
+      - "9092:9092"
+      - "9094:9094"
+    environment:
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_NODE_ID: 1
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,PLAINTEXT_HOST://0.0.0.0:9094,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:9094
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_LOG_RETENTION_HOURS: 168
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-topics --bootstrap-server localhost:9092 --list >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  mysql:
+    image: mysql:8.0
+    container_name: azki-mysql
+    hostname: mysql
+    ports:
+      - "3306:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpw
+      MYSQL_DATABASE: azki
+    command:
+      - --default-authentication-plugin=mysql_native_password
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./mysql/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -uroot -prootpw --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.3-alpine
+    container_name: azki-clickhouse
+    hostname: clickhouse
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    environment:
+      CLICKHOUSE_DB: azki
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - ./clickhouse/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q http://localhost:8123/ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:v0.7.2
+    container_name: azki-kafka-ui
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+      DYNAMIC_CONFIG_ENABLED: "true"
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+  users-loader:
+    build: ./users-loader
+    container_name: azki-users-loader
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_PORT: 3306
+      MYSQL_USER: root
+      MYSQL_PASSWORD: rootpw
+      MYSQL_DATABASE: azki
+      USERS_CSV: /data/users.csv
+    volumes:
+      - ./data:/data:ro
+    restart: "no"
+
+  order-seeder:
+    build: ./order-seeder
+    container_name: azki-order-seeder
+    depends_on:
+      mysql:
+        condition: service_healthy
+      users-loader:
+        condition: service_completed_successfully
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_PORT: 3306
+      MYSQL_USER: root
+      MYSQL_PASSWORD: rootpw
+      MYSQL_DATABASE: azki
+      EVENTS_CSV: /data/user_events.csv
+    volumes:
+      - ./data:/data:ro
+    restart: "no"
+
+  event-producer:
+    build: ./event-producer
+    container_name: azki-event-producer
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_TOPIC: user_events
+      KAFKA_TOPIC_PARTITIONS: 3
+      KAFKA_TOPIC_REPLICATION: 1
+      EVENTS_CSV: /data/user_events.csv
+      PRODUCE_DELAY_MS: 5
+      LOG_EVERY: 2000
+    volumes:
+      - ./data:/data:ro
+    restart: "no"
+
+  kafka-connect:
+    build: ./kafka-connect
+    container_name: azki-kafka-connect
+    depends_on:
+      kafka:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+    ports:
+      - "8083:8083"
+    environment:
+      CONNECT_BOOTSTRAP_SERVERS: kafka:9092
+      CONNECT_REST_PORT: 8083
+      CONNECT_REST_ADVERTISED_HOST_NAME: kafka-connect
+      CONNECT_GROUP_ID: azki-connect
+      CONNECT_CONFIG_STORAGE_TOPIC: _connect_configs
+      CONNECT_OFFSET_STORAGE_TOPIC: _connect_offsets
+      CONNECT_STATUS_STORAGE_TOPIC: _connect_status
+      CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR: 1
+      CONNECT_OFFSET_STORAGE_REPLICATION_FACTOR: 1
+      CONNECT_STATUS_STORAGE_REPLICATION_FACTOR: 1
+      CONNECT_KEY_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      CONNECT_VALUE_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      CONNECT_KEY_CONVERTER_SCHEMAS_ENABLE: "false"
+      CONNECT_VALUE_CONVERTER_SCHEMAS_ENABLE: "false"
+      CONNECT_PLUGIN_PATH: /usr/share/java,/usr/share/confluent-hub-components
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8083/connectors >/dev/null"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+
+  connector-registrar:
+    build: ./connector-registrar
+    container_name: azki-connector-registrar
+    depends_on:
+      kafka-connect:
+        condition: service_healthy
+      order-seeder:
+        condition: service_completed_successfully
+    environment:
+      CONNECT_URL: http://kafka-connect:8083
+    volumes:
+      - ./kafka-connect/connectors:/connectors:ro
+    restart: "no"
+
+  dq-validator:
+    build: ./dq-validator
+    container_name: azki-dq-validator
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_USER: azki_reader
+      MYSQL_PASSWORD: azki_reader_pw
+      MYSQL_DATABASE: azki
+      CH_HOST: clickhouse
+      CH_PORT: 9000
+      CH_USER: default
+      CH_PASSWORD: ""
+      CH_DATABASE: azki
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      DEFAULT_INTERVAL_SECONDS: 60
+      INITIAL_WAIT_SECONDS: 60
+    restart: unless-stopped
+
+  streaming-etl:
+    build: ./streaming-etl
+    container_name: azki-streaming-etl
+    depends_on:
+      kafka:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_TOPIC: user_events
+      KAFKA_STARTING_OFFSETS: earliest
+      MAX_OFFSETS_PER_TRIGGER: 5000
+      MYSQL_JDBC_URL: "jdbc:mysql://mysql:3306/azki?useSSL=false&allowPublicKeyRetrieval=true"
+      MYSQL_USER: azki_reader
+      MYSQL_PASSWORD: azki_reader_pw
+      CH_JDBC_URL: "jdbc:clickhouse://clickhouse:8123/azki"
+      CH_USER: default
+      CH_PASSWORD: ""
+      CHECKPOINT_BASE: /checkpoints
+      TRIGGER_INTERVAL: "10 seconds"
+      WATERMARK: "1 hour"
+      WINDOW_DURATION: "1 hour"
+    volumes:
+      - spark_checkpoints:/checkpoints
+    restart: "no"
+
+  spark-backfill:
+    build: ./streaming-etl
+    container_name: azki-spark-backfill
+    profiles: ["backfill"]
+    depends_on:
+      kafka:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      MYSQL_JDBC_URL: "jdbc:mysql://mysql:3306/azki?useSSL=false&allowPublicKeyRetrieval=true"
+      MYSQL_USER: azki_reader
+      MYSQL_PASSWORD: azki_reader_pw
+      CH_JDBC_URL: "jdbc:clickhouse://clickhouse:8123/azki"
+      CH_USER: default
+      CH_PASSWORD: ""
+    entrypoint:
+      - /opt/bitnami/spark/bin/spark-submit
+      - --master
+      - "local[*]"
+      - --packages
+      - "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1,com.mysql:mysql-connector-j:8.3.0"
+      - --conf
+      - "spark.jars.ivy=/tmp/.ivy2"
+      - --conf
+      - "spark.sql.shuffle.partitions=4"
+      - /app/backfill.py
+    restart: "no"
+
+volumes:
+  kafka_data:
+  mysql_data:
+  clickhouse_data:
+  spark_checkpoints:

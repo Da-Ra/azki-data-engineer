@@ -1,0 +1,17 @@
+{
+    "name": "mysql-source-products",
+    "config": {
+        "connector.class": "io.confluent.connect.jdbc.JdbcSourceConnector",
+        "connection.url": "jdbc:mysql://mysql:3306/azki?useSSL=false&allowPublicKeyRetrieval=true",
+        "connection.user": "azki_reader",
+        "connection.password": "azki_reader_pw",
+        "table.whitelist": "third_order,body_order,medical_order,fire_order",
+        "mode": "incrementing",
+        "incrementing.column.name": "order_id",
+        "topic.prefix": "mysql.azki.",
+        "poll.interval.ms": 5000,
+        "batch.max.rows": 1000,
+        "validate.non.null": "false",
+        "numeric.mapping": "best_fit"
+    }
+}
