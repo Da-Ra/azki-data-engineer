@@ -226,17 +226,3 @@ Python 3.11, Apache Spark 3.5.1 (PySpark), Kafka 7.6 (KRaft), Kafka Connect
 with JDBC source 10.7.4 + MySQL JDBC 8.3.0, MySQL 8.0, ClickHouse 24.3
 (ReplacingMergeTree, LowCardinality, MVs, Kafka engine tables, skip indexes,
 projections, RBAC), confluent-kafka-python, clickhouse-driver.
-
----
-
-## 9. Summary
-
-The implementation satisfies all three parts of the brief plus the backfill
-bonus. The design favours **provably-correct end-to-end behaviour**
-(reconciliation invariant), **idempotent everything** (ReplacingMergeTree
-+ `event_hash`), and **honest separation of concerns** (operational MySQL
-vs analytical ClickHouse, kept in sync by CDC rather than dual writes). The
-non-obvious decisions — dual MVs, explicit aliases, verbatim
-`premium_amount` propagation, watermark + sort-upstream trick, dual-sink
-DQ runner — are the ones that turn a working pipeline into a defensible
-one.
