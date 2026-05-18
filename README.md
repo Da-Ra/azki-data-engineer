@@ -218,11 +218,3 @@ These four numbers being identical proves:
 The DQ runner watches this invariant on a 2-minute cadence with severity
 `critical`. Any divergence pages someone in production.
 
----
-
-## 8. Tech stack
-
-Python 3.11, Apache Spark 3.5.1 (PySpark), Kafka 7.6 (KRaft), Kafka Connect
-with JDBC source 10.7.4 + MySQL JDBC 8.3.0, MySQL 8.0, ClickHouse 24.3
-(ReplacingMergeTree, LowCardinality, MVs, Kafka engine tables, skip indexes,
-projections, RBAC), confluent-kafka-python, clickhouse-driver.
