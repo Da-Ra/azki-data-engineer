@@ -1,4 +1,4 @@
-# Azki Senior DE Hiring Task — Technical Report
+# Azki Data Engineer Hiring Task — Technical Report
 
 ## 1. Context and brief
 
